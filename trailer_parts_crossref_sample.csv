@@ -1,0 +1,9 @@
+key,part_name,category,rating_lb,bolt_pattern,brake_type,notes,replaces,fits_models_like
+axle.dexter.3.5k,"Dexter 3,500 lb Idler Axle",axle,3500.0,5x4.5,none,Standard spring seats 1.75in; check hub face & spring center.,axle.lippert.3.5k,type=utility|car_hauler axle_count<=2 gvwr<=7000
+axle.dexter.7k,"Dexter 7,000 lb Brake Axle",axle,7000.0,8x6.5,electric,"12in electric brakes; verify hub face, spring center, and tube diameter.",axle.rockwell.7k,type=equip|tilt|gooseneck axles>=2 gvwr<=14000
+brake.kit.10in,Electric Brake Kit 10in,brakes,,5-lug,electric,For 3.5k axles with 10x2-1/4 drums.,,axle_rating<=3500
+brake.kit.12in,Electric Brake Kit 12in,brakes,,6-lug/8-lug,electric,For 5.2k–7k axles; verify backing plate bolt pattern.,,axle_rating>=5200
+hub.5x4.5,Hub/Drum 5x4.5,hub,,5x4.5,,Common utility/car hauler pattern. Verify inner/outer bearing sizes.,,bolt_pattern=5x4.5
+hub.5x5,Hub/Drum 5x5,hub,,5x5,,Less common; verify studs and bearings.,,bolt_pattern=5x5
+hub.6x5.5,Hub/Drum 6x5.5,hub,,6x5.5,,Typical 5.2k/6k axles; confirm seal size.,,bolt_pattern=6x5.5
+hub.8x6.5,Hub/Drum 8x6.5,hub,,8x6.5,,Common on 7k axles; check drum diameter 12in.,,bolt_pattern=8x6.5

@@ -115,3 +115,7 @@ def inventory_search(q: str = Query(..., description="Brand/Model free-text"),
     inv = load_inventory_for(dc).get("items", [])
     items = [item for item in inv if item.get("match_id") in ids]
     return {"dealer_code": dc, "query": q, "candidate_ids": ids, "items": items}
+@app.get("/debug_keys")
+def debug_keys():
+    import os
+    return {"API_KEYS_JSON": os.environ.get("API_KEYS_JSON", "(none)")}

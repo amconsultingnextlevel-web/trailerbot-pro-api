@@ -1,7 +1,7 @@
 import os, json
 from typing import Optional, Dict, Any, List
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 # Optional: retrieval module (specs/parts). We fall back gracefully if missing.
@@ -31,11 +31,15 @@ def load_api_keys() -> Dict[str, str]:
 
 API_KEYS = load_api_keys()
 
-def ensure_api_key(api_key: Optional[str]):
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key")
-    if api_key not in API_KEYS:
-        raise HTTPException(status_code=401, detail="Invalid X-API-Key")
+def ensure_api_key(api_key_header: Optional[str], api_key_query: Optional[str] = None):
+    """
+    Accept API key via header X-API-Key or query param ?api_key=.
+    """
+    token = api_key_header or api_key_query
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing API key (use header X-API-Key or query ?api_key=)")
+    if token not in API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid API key")
 # ================================================================
 
 
@@ -77,12 +81,16 @@ def simple_find_model(q: str) -> Dict[str, Any]:
 
 
 # ============================== SPECS ============================
-@app.get("/v1/answer_specs")
+@app.api_route("/v1/answer_specs", methods=["GET", "HEAD"])
 def answer_specs(
+    request: Request,
     q: str = Query(..., description="Free-text model query (e.g. 'Aluma 8218')"),
-    api_key: str = Header(None, alias="X-API-Key")
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key")
 ):
-    ensure_api_key(api_key)
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    ensure_api_key(api_key, api_key_q)
 
     if RETRIEVER:
         try:
@@ -95,12 +103,17 @@ def answer_specs(
 
 
 # ============================== PARTS ============================
-@app.get("/v1/answer_parts")
+@app.api_route("/v1/answer_parts", methods=["GET", "HEAD"])
 def answer_parts(
+    request: Request,
     q: str = Query(..., description="Parts query (e.g. 'Dexter 7k hub bolt pattern')"),
-    api_key: str = Header(None, alias="X-API-Key")
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key")
 ):
-    ensure_api_key(api_key)
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    ensure_api_key(api_key, api_key_q)
+
     if RETRIEVER:
         try:
             result = RETRIEVER.answer_parts(q)
@@ -112,17 +125,21 @@ def answer_parts(
 
 
 # =========================== TONGUE WEIGHT =======================
-@app.get("/v1/tw")
+@app.api_route("/v1/tw", methods=["GET", "HEAD"])
 def tongue_weight(
+    request: Request,
     q: str = Query(..., description="Model query to help estimate TW bounds"),
     loaded: Optional[int] = Query(None, description="Total loaded trailer weight in lb"),
-    api_key: str = Header(None, alias="X-API-Key")
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key")
 ):
     """
     If RETRIEVER present, try model-specific pct; else use 10–15% heuristic on
     'loaded' or fallback to 10–15% of GVWR (or 5000 if none).
     """
-    ensure_api_key(api_key)
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    ensure_api_key(api_key, api_key_q)
 
     tw_min_pct, tw_max_pct = 0.10, 0.15
     model_info = None
@@ -138,7 +155,6 @@ def tongue_weight(
         except Exception:
             pass
 
-    # decide basis
     basis = None
     if loaded and isinstance(loaded, int):
         basis = loaded
@@ -175,12 +191,18 @@ def load_dealer_inventory(dealer_code: str) -> List[Dict[str, Any]]:
 
 
 # ============================== INVENTORY ========================
-@app.get("/v1/{dealer_code}/inventory")
+@app.api_route("/v1/{dealer_code}/inventory", methods=["GET", "HEAD"])
 def get_inventory(
+    request: Request,
     dealer_code: str,
-    api_key: str = Header(None, alias="X-API-Key")
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key")
 ):
-    ensure_api_key(api_key)
+    # Allow HEAD precheck
+    if request.method == "HEAD":
+        return Response(status_code=200)
+
+    ensure_api_key(api_key, api_key_q)
     try:
         items = load_dealer_inventory(dealer_code)
         return {"dealer_code": dealer_code, "items": items}
@@ -190,13 +212,19 @@ def get_inventory(
         raise HTTPException(status_code=500, detail=f"inventory load error: {e}")
 
 
-@app.get("/v1/{dealer_code}/inventory/search")
+@app.api_route("/v1/{dealer_code}/inventory/search", methods=["GET", "HEAD"])
 def search_inventory(
+    request: Request,
     dealer_code: str,
     q: str = Query(..., description="Free-text search across match_id, stock_no, vin, status, price, and all source_row fields"),
-    api_key: str = Header(None, alias="X-API-Key")
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key")
 ):
-    ensure_api_key(api_key)
+    # Allow HEAD precheck
+    if request.method == "HEAD":
+        return Response(status_code=200)
+
+    ensure_api_key(api_key, api_key_q)
     q_norm = (q or "").strip().lower()
     if not q_norm:
         return {"dealer_code": dealer_code, "query": q, "items": []}
@@ -234,6 +262,55 @@ def search_inventory(
             })
 
     return {"dealer_code": dealer_code, "query": q, "items": results}
+
+
+# Fast, voice-friendly summary endpoint
+@app.api_route("/v1/{dealer_code}/inventory/quick", methods=["GET", "HEAD"])
+def quick_inventory(
+    request: Request,
+    dealer_code: str,
+    q: str = Query(...),
+    limit: int = Query(1, ge=1, le=5),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key"),
+):
+    if request.method == "HEAD":
+        return Response(status_code=200)
+
+    ensure_api_key(api_key, api_key_q)
+
+    try:
+        items = load_dealer_inventory(dealer_code)
+    except FileNotFoundError:
+        return {"dealer_code": dealer_code, "query": q, "count": 0, "items": [], "error": "inventory file not found"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"inventory load error: {e}")
+
+    q_norm = q.strip().lower()
+    terms = [t for t in q_norm.split() if t]
+
+    out = []
+    for it in items:
+        hay = []
+        for key in ("match_id", "stock_no", "vin", "price", "status"):
+            v = it.get(key)
+            if v: hay.append(str(v).lower())
+        src = it.get("source_row") or {}
+        for _, v in src.items():
+            if v is not None: hay.append(str(v).lower())
+
+        if all(t in " ".join(hay) for t in terms):
+            out.append({
+                "model": src.get("Model") or src.get("model") or it.get("match_id"),
+                "stock_no": it.get("stock_no"),
+                "status": it.get("status"),
+                "price": it.get("price"),
+                "vin": it.get("vin"),
+            })
+            if len(out) >= limit:
+                break
+
+    return {"dealer_code": dealer_code, "query": q, "count": len(out), "items": out}
 # ================================================================
 
 
@@ -243,8 +320,10 @@ def root():
     return {"ok": True, "service": "trailerbot-pro-api"}
 
 @app.get("/env")
-def echo_env(api_key: str = Header(None, alias="X-API-Key")):
-    ensure_api_key(api_key)
+def echo_env(
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key")
+):
+    ensure_api_key(api_key, api_key_q)
     return {"API_KEYS_JSON": os.environ.get("API_KEYS_JSON", '{"sk_demo_wasatch":"wasatch"}')}
 # ================================================================
-

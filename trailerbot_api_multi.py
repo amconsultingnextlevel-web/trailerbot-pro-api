@@ -107,3 +107,42 @@ def inventory_search(q: str = Query(..., description="Brand/Model free-text"),
     inv = load_inventory_for(dc).get("items", [])
     items = [item for item in inv if item.get("match_id") in ids]
     return {"dealer_code": dc, "query": q, "candidate_ids": ids, "items": items}
+# ---------- TEMP DEBUG ROUTES (remove after testing) ----------
+@app.get("/debug_fs")
+def debug_fs():
+    """
+    Lists JSON files under DATA_ROOT so we can verify the inventory file is present on Render.
+    """
+    import os
+    root = os.environ.get("DATA_ROOT", "./data")
+    found = []
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            if f.endswith(".json"):
+                p = os.path.join(dirpath, f)
+                try:
+                    sz = os.path.getsize(p)
+                except Exception:
+                    sz = None
+                found.append({"path": p, "size": sz})
+    return {"DATA_ROOT": root, "json_files": found}
+
+@app.get("/debug_inventory/{dealer_code}")
+def debug_inventory(dealer_code: str):
+    """
+    Opens DATA_ROOT/<dealer_code>/inventory_normalized.json and shows count + one sample item.
+    """
+    import os, json
+    root = os.environ.get("DATA_ROOT", "./data")
+    path = os.path.join(root, dealer_code, "inventory_normalized.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("items", [])
+        sample = items[0] if items else None
+        return {"path": path, "items_count": len(items), "sample": sample}
+    except FileNotFoundError:
+        return {"path": path, "error": "file_not_found"}
+    except Exception as e:
+        return {"path": path, "error": str(e)}
+# ---------- END TEMP DEBUG ROUTES ----------

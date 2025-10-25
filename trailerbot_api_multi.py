@@ -1,119 +1,246 @@
 import os, json
-from fastapi import FastAPI, Header, HTTPException, Query, Path
+from typing import Optional, Dict, Any, List
+
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
-from typing import Optional, Dict
-from trailerbot_retrieval import TrailerBotRetrieval
 
-# ---- Config ----
-MODELS_CSV = os.environ.get("MODELS_CSV", "./trailer_models_seeded.csv")
-PARTS_CSV  = os.environ.get("PARTS_CSV", "./trailer_parts_crossref_sample.csv")
-DATA_ROOT  = os.environ.get("DATA_ROOT", "./data")  # per-dealer inventory lives here
-
-API_KEYS   = os.environ.get("API_KEYS_JSON", "{}")
-
+# Optional: retrieval module (specs/parts). We fall back gracefully if missing.
 try:
-    API_KEYS_OBJ = json.loads(API_KEYS)
+    from trailerbot_retrieval import TrailerBotRetrieval
 except Exception:
-    API_KEYS_OBJ = {}
+    TrailerBotRetrieval = None  # graceful fallback
 
-app = FastAPI(title="TrailerBot Pro API (Multi-Dealer)", version="0.2.1")
+app = FastAPI(title="TrailerBot Pro API")
 
-retrieval = TrailerBotRetrieval(models_csv=MODELS_CSV, parts_csv=PARTS_CSV)
-
-# ---- Auth helpers ----
-def require_key(x_api_key: Optional[str]) -> str:
-    if not API_KEYS_OBJ:
-        return ""
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key")
-    if isinstance(API_KEYS_OBJ, dict):
-        if x_api_key not in API_KEYS_OBJ:
-            raise HTTPException(status_code=403, detail="Invalid API key")
-        return API_KEYS_OBJ[x_api_key]
-    if isinstance(API_KEYS_OBJ, list):
-        if x_api_key not in API_KEYS_OBJ:
-            raise HTTPException(status_code=403, detail="Invalid API key")
-        return ""
-    raise HTTPException(status_code=403, detail="Invalid API key format")
-
-def resolve_dealer(x_api_key: Optional[str], dealer_code_param: Optional[str]) -> str:
-    mapped = require_key(x_api_key)
-    if isinstance(API_KEYS_OBJ, dict) and mapped:
-        return mapped
-    if not dealer_code_param:
-        raise HTTPException(status_code=400, detail="dealer_code required")
-    return dealer_code_param
-
-def inventory_path_for(dealer_code: str) -> str:
-    return os.path.join(DATA_ROOT, dealer_code, "inventory_normalized.json")
-
-def load_inventory_for(dealer_code: str) -> Dict:
-    p = inventory_path_for(dealer_code)
+# ============================== AUTH ==============================
+def load_api_keys() -> Dict[str, str]:
+    """
+    Expect env var API_KEYS_JSON like: {"sk_demo_wasatch":"wasatch"}
+    If missing/invalid, we default to {"sk_demo_wasatch":"wasatch"}.
+    """
+    raw = os.environ.get("API_KEYS_JSON")
+    if not raw:
+        return {"sk_demo_wasatch": "wasatch"}
     try:
-        with open(p, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"items": [], "note": f"No inventory file at {p}"}
-    except Exception as e:
-        return {"items": [], "error": str(e)}
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"sk_demo_wasatch": "wasatch"}
 
-# ---- Endpoints ----
+API_KEYS = load_api_keys()
+
+def ensure_api_key(api_key: Optional[str]):
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key")
+    if api_key not in API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid X-API-Key")
+# ================================================================
+
+
+# ============================= HEALTH ===========================
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "0.2.1"}
+    return {"status": "ok"}
+# ================================================================
 
+
+# ============================ RETRIEVAL ==========================
+RETRIEVER: Optional[Any] = None
+SEED_MODELS_CSV = os.environ.get("SEED_MODELS_CSV", "./trailer_models_seeded.csv")
+PARTS_CSV = os.environ.get("PARTS_CSV", "./trailer_parts_crossref_sample.csv")
+
+if TrailerBotRetrieval:
+    try:
+        RETRIEVER = TrailerBotRetrieval(
+            models_csv=SEED_MODELS_CSV,
+            parts_csv=PARTS_CSV
+        )
+    except Exception as e:
+        print(f"[warn] TrailerBotRetrieval init failed: {e}")
+        RETRIEVER = None
+else:
+    print("[warn] trailerbot_retrieval.py not found; using simple fallbacks")
+
+def simple_find_model(q: str) -> Dict[str, Any]:
+    """Fallback shape when retriever is unavailable."""
+    return {
+        "brand": None,
+        "model": q,
+        "type": None,
+        "gvwr_lb": None,
+        "payload_lb": None,
+        "notes": "fallback result (no retriever)"
+    }
+# ================================================================
+
+
+# ============================== SPECS ============================
 @app.get("/v1/answer_specs")
-def answer_specs(q: str = Query(..., description="Free-text model query"),
-                 x_api_key: Optional[str] = Header(None)):
-    require_key(x_api_key)
-    return JSONResponse(retrieval.answer_specs(q))
+def answer_specs(
+    q: str = Query(..., description="Free-text model query (e.g. 'Aluma 8218')"),
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    ensure_api_key(api_key)
 
+    if RETRIEVER:
+        try:
+            result = RETRIEVER.answer_specs(q)
+            return result
+        except Exception as e:
+            return {"query": q, "candidates": [simple_find_model(q)], "warning": str(e)}
+    return {"query": q, "candidates": [simple_find_model(q)], "warning": "retriever unavailable"}
+# ================================================================
+
+
+# ============================== PARTS ============================
 @app.get("/v1/answer_parts")
-def answer_parts(q: str = Query(..., description="Free-text model query"),
-                 x_api_key: Optional[str] = Header(None)):
-    require_key(x_api_key)
-    return JSONResponse(retrieval.answer_parts(q))
+def answer_parts(
+    q: str = Query(..., description="Parts query (e.g. 'Dexter 7k hub bolt pattern')"),
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    ensure_api_key(api_key)
+    if RETRIEVER:
+        try:
+            result = RETRIEVER.answer_parts(q)
+            return result
+        except Exception as e:
+            return {"query": q, "parts": [], "warning": str(e)}
+    return {"query": q, "parts": [], "warning": "retriever unavailable"}
+# ================================================================
 
+
+# =========================== TONGUE WEIGHT =======================
 @app.get("/v1/tw")
-def tw(q: str = Query(..., description="Model query"),
-       loaded: int = Query(..., description="Loaded trailer weight (lb)"),
-       x_api_key: Optional[str] = Header(None)):
-    require_key(x_api_key)
-    return JSONResponse(retrieval.answer_tongue_weight(q, loaded))
+def tongue_weight(
+    q: str = Query(..., description="Model query to help estimate TW bounds"),
+    loaded: Optional[int] = Query(None, description="Total loaded trailer weight in lb"),
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    If RETRIEVER present, try model-specific pct; else use 10–15% heuristic on
+    'loaded' or fallback to 10–15% of GVWR (or 5000 if none).
+    """
+    ensure_api_key(api_key)
 
+    tw_min_pct, tw_max_pct = 0.10, 0.15
+    model_info = None
+
+    if RETRIEVER:
+        try:
+            spec = RETRIEVER.answer_specs(q)
+            cand = (spec.get("candidates") or [None])[0] if isinstance(spec, dict) else None
+            model_info = cand or {}
+            pct = model_info.get("tw_pct_range") or model_info.get("tongue_weight_pct_range")
+            if isinstance(pct, (list, tuple)) and len(pct) == 2:
+                tw_min_pct, tw_max_pct = float(pct[0]), float(pct[1])
+        except Exception:
+            pass
+
+    # decide basis
+    basis = None
+    if loaded and isinstance(loaded, int):
+        basis = loaded
+    else:
+        gvwr = model_info.get("gvwr_lb") if model_info else None
+        basis = int(gvwr) if gvwr else 5000  # conservative fallback
+
+    tw_min = int(round(basis * tw_min_pct))
+    tw_max = int(round(basis * tw_max_pct))
+    return {
+        "query": q,
+        "loaded_basis_lb": basis,
+        "tw_estimate": {
+            "tw_min_lb": tw_min,
+            "tw_max_lb": tw_max,
+            "pct_range": [tw_min_pct, tw_max_pct]
+        }
+    }
+# ================================================================
+
+
+# ========================= INVENTORY LOADER ======================
+def load_dealer_inventory(dealer_code: str) -> List[Dict[str, Any]]:
+    """
+    Loads DATA_ROOT/<dealer_code>/inventory_normalized.json and returns the 'items' array.
+    """
+    data_root = os.environ.get("DATA_ROOT", "./data")
+    path = os.path.join(data_root, dealer_code, "inventory_normalized.json")
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    items = data.get("items", [])
+    return items if isinstance(items, list) else []
+# ================================================================
+
+
+# ============================== INVENTORY ========================
 @app.get("/v1/{dealer_code}/inventory")
-def inventory_list(dealer_code: str = Path(..., description="Dealer code"),
-                   x_api_key: Optional[str] = Header(None)):
-    dc = resolve_dealer(x_api_key, dealer_code)
-    inv = load_inventory_for(dc).get("items", [])
-    return {"dealer_code": dc, "items": inv}
+def get_inventory(
+    dealer_code: str,
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    ensure_api_key(api_key)
+    try:
+        items = load_dealer_inventory(dealer_code)
+        return {"dealer_code": dealer_code, "items": items}
+    except FileNotFoundError:
+        return {"dealer_code": dealer_code, "items": [], "error": f"not found under DATA_ROOT for {dealer_code}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"inventory load error: {e}")
 
-@app.get("/v1/{dealer_code}/inventory/{model_id}")
-def inventory_by_model(model_id: str,
-                       dealer_code: str = Path(..., description="Dealer code"),
-                       x_api_key: Optional[str] = Header(None)):
-    dc = resolve_dealer(x_api_key, dealer_code)
-    inv = load_inventory_for(dc).get("items", [])
-    hits = [item for item in inv if item.get("match_id") == model_id]
-    return {"dealer_code": dc, "model_id": model_id, "items": hits}
 
 @app.get("/v1/{dealer_code}/inventory/search")
-def inventory_search(q: str = Query(..., description="Brand/Model free-text"),
-                     dealer_code: str = Path(..., description="Dealer code"),
-                     x_api_key: Optional[str] = Header(None)):
-    dc = resolve_dealer(x_api_key, dealer_code)
-    candidates = retrieval.answer_specs(q).get("candidates", [])
-    ids = [c["id"] for c in candidates]
-    inv = load_inventory_for(dc).get("items", [])
-    items = [item for item in inv if item.get("match_id") in ids]
-    return {"dealer_code": dc, "query": q, "candidate_ids": ids, "items": items}
-# ---------- TEMP DEBUG ROUTES (remove after testing) ----------
+def search_inventory(
+    dealer_code: str,
+    q: str = Query(..., description="Free-text search across match_id, stock_no, vin, status, price, and all source_row fields"),
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    ensure_api_key(api_key)
+    q_norm = (q or "").strip().lower()
+    if not q_norm:
+        return {"dealer_code": dealer_code, "query": q, "items": []}
+
+    try:
+        items = load_dealer_inventory(dealer_code)
+    except FileNotFoundError:
+        return {"dealer_code": dealer_code, "query": q, "items": [], "error": "inventory file not found"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"inventory load error: {e}")
+
+    terms = [t for t in q_norm.split() if t]
+    results = []
+    for it in items:
+        # Search across common fields + every original CSV field in source_row
+        hay = []
+        for key in ("match_id", "stock_no", "vin", "price", "status"):
+            v = it.get(key)
+            if v:
+                hay.append(str(v).lower())
+        src = it.get("source_row") or {}
+        for _, v in src.items():
+            if v is not None:
+                hay.append(str(v).lower())
+
+        blob = " ".join(hay)
+        if all(term in blob for term in terms):
+            results.append({
+                "match_id": it.get("match_id"),
+                "stock_no": it.get("stock_no"),
+                "status": it.get("status"),
+                "price": it.get("price"),
+                "vin": it.get("vin"),
+                "source_row": src
+            })
+
+    return {"dealer_code": dealer_code, "query": q, "items": results}
+# ================================================================
+
+
+# ============================== DEBUG ============================
+# Keep while testing; remove later if you like.
 @app.get("/debug_fs")
 def debug_fs():
-    """
-    Lists JSON files under DATA_ROOT so we can verify the inventory file is present on Render.
-    """
-    import os
     root = os.environ.get("DATA_ROOT", "./data")
     found = []
     for dirpath, _, files in os.walk(root):
@@ -129,10 +256,6 @@ def debug_fs():
 
 @app.get("/debug_inventory/{dealer_code}")
 def debug_inventory(dealer_code: str):
-    """
-    Opens DATA_ROOT/<dealer_code>/inventory_normalized.json and shows count + one sample item.
-    """
-    import os, json
     root = os.environ.get("DATA_ROOT", "./data")
     path = os.path.join(root, dealer_code, "inventory_normalized.json")
     try:
@@ -145,4 +268,17 @@ def debug_inventory(dealer_code: str):
         return {"path": path, "error": "file_not_found"}
     except Exception as e:
         return {"path": path, "error": str(e)}
-# ---------- END TEMP DEBUG ROUTES ----------
+# ================================================================
+
+
+# ============================== ROOT/ECHO ========================
+@app.get("/")
+def root():
+    return {"ok": True, "service": "trailerbot-pro-api"}
+
+@app.get("/env")
+def echo_env(api_key: str = Header(None, alias="X-API-Key")):
+    ensure_api_key(api_key)
+    return {"API_KEYS_JSON": os.environ.get("API_KEYS_JSON", '{"sk_demo_wasatch":"wasatch"}')}
+# ================================================================
+

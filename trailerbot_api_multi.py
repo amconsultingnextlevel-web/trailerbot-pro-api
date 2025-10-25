@@ -315,7 +315,15 @@ def quick_inventory(
 
 
 # ============================== ROOT/ECHO ========================
-@app.get("/")
+
+from fastapi import Request, Response  # you already have these in my last patch
+
+@app.api_route("/", methods=["GET", "HEAD"])
+def root(request: Request):
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    return {"ok": True, "service": "trailerbot-pro-api"}
+
 def root():
     return {"ok": True, "service": "trailerbot-pro-api"}
 

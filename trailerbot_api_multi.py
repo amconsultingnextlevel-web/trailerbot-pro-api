@@ -237,40 +237,6 @@ def search_inventory(
 # ================================================================
 
 
-# ============================== DEBUG ============================
-# Keep while testing; remove later if you like.
-@app.get("/debug_fs")
-def debug_fs():
-    root = os.environ.get("DATA_ROOT", "./data")
-    found = []
-    for dirpath, _, files in os.walk(root):
-        for f in files:
-            if f.endswith(".json"):
-                p = os.path.join(dirpath, f)
-                try:
-                    sz = os.path.getsize(p)
-                except Exception:
-                    sz = None
-                found.append({"path": p, "size": sz})
-    return {"DATA_ROOT": root, "json_files": found}
-
-@app.get("/debug_inventory/{dealer_code}")
-def debug_inventory(dealer_code: str):
-    root = os.environ.get("DATA_ROOT", "./data")
-    path = os.path.join(root, dealer_code, "inventory_normalized.json")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        items = data.get("items", [])
-        sample = items[0] if items else None
-        return {"path": path, "items_count": len(items), "sample": sample}
-    except FileNotFoundError:
-        return {"path": path, "error": "file_not_found"}
-    except Exception as e:
-        return {"path": path, "error": str(e)}
-# ================================================================
-
-
 # ============================== ROOT/ECHO ========================
 @app.get("/")
 def root():

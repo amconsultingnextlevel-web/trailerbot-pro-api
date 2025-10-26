@@ -315,7 +315,6 @@ def quick_inventory(
 
 
 # ============================== ROOT/ECHO ========================
-
 @app.api_route("/", methods=["GET", "HEAD"])
 def root(request: Request):
     if request.method == "HEAD":
@@ -330,9 +329,61 @@ def ping(request: Request, api_key: Optional[str] = Query(None, alias="api_key")
     if api_key != "sk_demo_wasatch":
         raise HTTPException(status_code=401, detail="Invalid or missing api_key")
     return {"ok": True, "msg": "pong"}
-    
-def root():
-    return {"ok": True, "service": "trailerbot-pro-api"}
+
+# Voice-friendly, ready-to-say sentence
+@app.api_route("/v1/{dealer_code}/inventory/utter", methods=["GET", "HEAD"])
+def inventory_utter(
+    request: Request,
+    dealer_code: str,
+    q: str = Query(...),
+    limit: int = Query(1, ge=1, le=5),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key_q: Optional[str] = Query(None, alias="api_key"),
+):
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    ensure_api_key(api_key, api_key_q)
+
+    try:
+        items = load_dealer_inventory(dealer_code)
+    except FileNotFoundError:
+        return {"say": f"I do not see any inventory available for {q} right now at dealer {dealer_code}."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"inventory load error: {e}")
+
+    q_norm = q.strip().lower()
+    terms = [t for t in q_norm.split() if t]
+
+    found = []
+    for it in items:
+        hay = []
+        for key in ("match_id", "stock_no", "vin", "price", "status"):
+            v = it.get(key)
+            if v: hay.append(str(v).lower())
+        src = it.get("source_row") or {}
+        for _, v in src.items():
+            if v is not None: hay.append(str(v).lower())
+        if all(t in " ".join(hay) for t in terms):
+            found.append(it)
+            if len(found) >= limit:
+                break
+
+    if not found:
+        return {"say": f"I do not see an exact match for {q} in current inventory. Would you like similar options or a special order?"}
+
+    it = found[0]
+    src = it.get("source_row") or {}
+    model = src.get("Model") or src.get("model") or it.get("match_id") or q
+    stock = it.get("stock_no")
+    status = it.get("status") or "in stock"
+
+    parts = [f"Here is what I found for {q}: {model}"]
+    if stock:
+        parts.append(f"stock number {stock}")
+    parts.append(f"status {status}")
+    sentence = ", ".join(parts) + ". Would you like me to text you the details or check similar options?"
+
+    return {"say": sentence}
 
 @app.get("/env")
 def echo_env(

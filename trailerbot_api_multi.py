@@ -316,14 +316,21 @@ def quick_inventory(
 
 # ============================== ROOT/ECHO ========================
 
-from fastapi import Request, Response  # you already have these in my last patch
-
 @app.api_route("/", methods=["GET", "HEAD"])
 def root(request: Request):
     if request.method == "HEAD":
         return Response(status_code=200)
     return {"ok": True, "service": "trailerbot-pro-api"}
 
+@app.api_route("/v1/ping", methods=["GET", "HEAD"])
+def ping(request: Request, api_key: Optional[str] = Query(None, alias="api_key")):
+    # allow anonymous HEAD; require api_key on GET
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    if api_key != "sk_demo_wasatch":
+        raise HTTPException(status_code=401, detail="Invalid or missing api_key")
+    return {"ok": True, "msg": "pong"}
+    
 def root():
     return {"ok": True, "service": "trailerbot-pro-api"}
 

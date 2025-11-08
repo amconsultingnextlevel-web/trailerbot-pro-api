@@ -377,13 +377,8 @@ def inventory_utter(
     stock = it.get("stock_no")
     status = it.get("status") or "in stock"
 
-    parts = [f"Here is what I found for {q}: {model}"]
-    if stock:
-        parts.append(f"stock number {stock}")
-    parts.append(f"status {status}")
-    sentence = ", ".join(parts) + ". Would you like me to text you the details or check similar options?"
-
-    return {"say": sentence}
+    # Format response naturally
+    return format_inventory_response(it, q, model, stock, status)
 
 @app.get("/env")
 def echo_env(
@@ -393,3 +388,157 @@ def echo_env(
     ensure_api_key(api_key, api_key_q)
     return {"API_KEYS_JSON": os.environ.get("API_KEYS_JSON", '{"sk_demo_wasatch":"wasatch"}')}
 # ================================================================
+
+
+# ============================================
+# HELPER FUNCTION FOR NATURAL SPEECH
+# ============================================
+
+def format_inventory_response(item, query, model, stock_no, status):
+    """
+    Format inventory item into natural speech for voice agents.
+    Handles sold items and formats numbers naturally.
+    """
+    # Get source data
+    src = item.get("source_row") or {}
+    
+    # Parse model to extract brand and model number
+    model_str = str(model).lower()
+    
+    # Try to extract brand and model from the model string
+    # Common formats: "aluma-8218ta-...", "Aluma 8218", etc.
+    brand = ""
+    model_num = ""
+    
+    if "-" in model_str:
+        parts = model_str.split("-")
+        brand = parts[0].capitalize() if len(parts) > 0 else ""
+        model_num = parts[1].upper() if len(parts) > 1 else query
+    else:
+        # Try to split on space
+        words = model_str.split()
+        if len(words) >= 2:
+            brand = words[0].capitalize()
+            model_num = words[1]
+        else:
+            brand = ""
+            model_num = query
+    
+    # Format model number naturally for speech (e.g., "8218" -> "82 18")
+    model_natural = format_model_for_speech(model_num)
+    
+    # Check if sold
+    status_lower = str(status).lower()
+    if "sold" in status_lower:
+        if brand and model_natural:
+            return {
+                "say": f"I'm sorry, that {brand} {model_natural} has already been sold. "
+                       f"Would you like me to check if we have similar models in stock or can order one for you?"
+            }
+        else:
+            return {
+                "say": f"I'm sorry, that {query} has already been sold. "
+                       f"Would you like me to check similar options?"
+            }
+    
+    # Build natural response for available trailer
+    if brand and model_natural:
+        response = f"Great news! We have the {brand} {model_natural} in stock. "
+    else:
+        response = f"Great news! We have the {query} in stock. "
+    
+    # Add stock number if available
+    if stock_no:
+        response += f"The stock number is {stock_no}. "
+    
+    # Try to add some specs from source_row if available
+    length = src.get("Length") or src.get("length")
+    width = src.get("Width") or src.get("width")
+    if length and width:
+        response += f"It's {length} by {width} feet. "
+    
+    gvwr = src.get("GVWR") or src.get("gvwr")
+    if gvwr:
+        gvwr_natural = format_weight_for_speech(gvwr)
+        response += f"The weight rating is {gvwr_natural}. "
+    
+    price = item.get("price")
+    if price:
+        price_natural = format_price_for_speech(price)
+        response += f"It's priced at {price_natural}. "
+    
+    response += "Would you like me to text you the full details?"
+    
+    return {"say": response}
+
+
+def format_model_for_speech(model):
+    """
+    Format model numbers for natural speech.
+    Examples: "8218" -> "82 18", "7210" -> "72 10"
+    """
+    if not model:
+        return ""
+    
+    # Extract just digits
+    digits = ''.join(c for c in str(model) if c.isdigit())
+    
+    # If it's a 4-digit model, split it
+    if len(digits) == 4:
+        return f"{digits[:2]} {digits[2:]}"
+    
+    return str(model)
+
+
+def format_weight_for_speech(weight):
+    """
+    Format weights naturally.
+    Examples: "7000" -> "seven thousand pounds", "3500" -> "thirty-five hundred pounds"
+    """
+    try:
+        # Convert to int, handling strings like "7000lb" or "7000#"
+        weight_str = str(weight).lower().replace("lb", "").replace("#", "").replace(",", "").strip()
+        weight_int = int(float(weight_str))
+        
+        if weight_int >= 10000:
+            thousands = weight_int // 1000
+            return f"about {thousands} thousand pounds"
+        elif weight_int >= 1000:
+            thousands = weight_int // 1000
+            hundreds = (weight_int % 1000) // 100
+            if hundreds == 0:
+                return f"{thousands} thousand pounds"
+            elif hundreds == 5:
+                return f"{thousands} thousand five hundred pounds"
+            else:
+                return f"about {thousands} thousand {hundreds} hundred pounds"
+        else:
+            return f"{weight_int} pounds"
+    except:
+        return str(weight)
+
+
+def format_price_for_speech(price):
+    """
+    Format prices naturally.
+    Examples: "$12,995" -> "around thirteen thousand dollars"
+    """
+    try:
+        # Convert to int, handling strings like "$12,995"
+        price_str = str(price).replace("$", "").replace(",", "").strip()
+        price_int = int(float(price_str))
+        
+        if price_int >= 1000:
+            thousands = price_int // 1000
+            hundreds = (price_int % 1000) // 100
+            
+            if hundreds == 0:
+                return f"{thousands} thousand dollars"
+            elif hundreds >= 5:
+                return f"around {thousands + 1} thousand dollars"
+            else:
+                return f"around {thousands} thousand {hundreds} hundred dollars"
+        else:
+            return f"{price_int} dollars"
+    except:
+        return str(price)
